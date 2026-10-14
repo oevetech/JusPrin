@@ -76,6 +76,10 @@ if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
         OUTPUT_VARIABLE GIT_COMMIT_HASH
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
+    # JusBot: um hash fixo evita recompilar o projeto inteiro a cada commit
+    if(DEFINED ENV{JUSBOT_GIT_HASH})
+        set(GIT_COMMIT_HASH "$ENV{JUSBOT_GIT_HASH}")
+    endif()
     add_definitions("-DGIT_COMMIT_HASH=\"${GIT_COMMIT_HASH}\"")
 endif()
 

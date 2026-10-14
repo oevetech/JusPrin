@@ -37,6 +37,9 @@ public:
     static nlohmann::json RunCalibration(const nlohmann::json& payload);
     static nlohmann::json SaveProject(const nlohmann::json& payload);
     static nlohmann::json SendToPrinter(const nlohmann::json& payload);
+    static nlohmann::json CheckModel(const nlohmann::json& payload);
+    static nlohmann::json RepairModel(const nlohmann::json& payload);
+    static nlohmann::json RenderPreview(const nlohmann::json& payload);
 };
 
 }} // namespace Slic3r::GUI

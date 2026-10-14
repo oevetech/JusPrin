@@ -1,3 +1,5 @@
+#include <GL/glew.h>   // precisa vir antes de qualquer cabeçalho que inclua gl.h
+
 #include "JusPrinUltra.hpp"
 
 #include <algorithm>
@@ -5,8 +7,12 @@
 #include <ctime>
 #include <stdexcept>
 
+#include <boost/beast/core/detail/base64.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
+#include <wx/glcanvas.h>
+#include <wx/image.h>
+#include <wx/mstream.h>
 #include <wx/stdpaths.h>
 
 #include "libslic3r/CustomGCode.hpp"
@@ -23,11 +29,15 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/calib.hpp"
 
+#include "slic3r/GUI/3DScene.hpp"
+#include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
+#include "slic3r/GUI/MainFrame.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/Tab.hpp"
+#include "slic3r/Utils/FixModelByWin10.hpp"
 
 using nlohmann::json;
 
@@ -144,6 +154,9 @@ const std::map<std::string, JusPrinUltra::Handler>& JusPrinUltra::handlers()
         {"jp_run_calibration", &JusPrinUltra::RunCalibration},
         {"jp_save_project", &JusPrinUltra::SaveProject},
         {"jp_send_to_printer", &JusPrinUltra::SendToPrinter},
+        {"jp_check_model", &JusPrinUltra::CheckModel},
+        {"jp_repair_model", &JusPrinUltra::RepairModel},
+        {"jp_render_preview", &JusPrinUltra::RenderPreview},
     };
     return map;
 }
@@ -561,6 +574,28 @@ json JusPrinUltra::RunCalibration(const json& p)
         need_range(40, 200, 10);
         params.mode = CalibMode::Calib_VFA_Tower;
         plater()->calib_VFA(params);
+    } else if (test == "input_shaping_freq") {
+        // Mesmos padrões do diálogo do OrcaSlicer: 15–110 Hz nos dois eixos, amortecimento 0,15
+        params.freqStartX = params.freqStartY = p.value("freq_start", 15.0);
+        params.freqEndX = params.freqEndY = p.value("freq_end", 110.0);
+        params.start = p.value("damping", 0.15);
+        params.test_model = 0;   // torre de ringing
+        params.mode = CalibMode::Calib_Input_shaping_freq;
+        plater()->calib_input_shaping_freq(params);
+    } else if (test == "input_shaping_damp") {
+        if (!p.contains("freq_x") || !p.contains("freq_y"))
+            fail("Informe freq_x e freq_y (resultado do teste de frequência).");
+        params.freqStartX = p.value("freq_x", 0.0);
+        params.freqStartY = p.value("freq_y", 0.0);
+        need_range(0.0, 0.5, 0.05);
+        params.test_model = 0;
+        params.mode = CalibMode::Calib_Input_shaping_damp;
+        plater()->calib_input_shaping_damp(params);
+    } else if (test == "junction_deviation") {
+        need_range(0.0, 0.25, 0.01);
+        params.test_model = 0;
+        params.mode = CalibMode::Calib_Junction_Deviation;
+        plater()->calib_junction_deviation(params);
     } else {
         fail("Teste desconhecido: " + test);
     }
@@ -603,6 +638,110 @@ json JusPrinUltra::SendToPrinter(const json&)
         fail("Fatie a mesa antes de enviar.");
     plater()->send_gcode_legacy(-1);   // abre a janela de envio para o usuário confirmar
     return { {"status", "Janela de envio aberta para o usuário confirmar."} };
+}
+
+// ---------- Verificação e reparo de modelo ----------
+
+json JusPrinUltra::CheckModel(const json& p)
+{
+    json objects = json::array();
+    const auto& objs = model().objects;
+    for (size_t i = 0; i < objs.size(); ++i) {
+        if (p.contains("index") && p["index"].get<int>() != int(i))
+            continue;
+        const ModelObject* obj = objs[i];
+        const TriangleMeshStats st = obj->get_object_stl_stats();
+        const RepairedMeshErrors& fixed = st.repaired_errors;
+        objects.push_back({
+            {"index", i}, {"name", obj->name},
+            {"facets", st.number_of_facets}, {"volume_mm3", st.volume},
+            {"separate_shells", st.number_of_parts},
+            {"open_edges", st.open_edges},
+            {"watertight", st.open_edges == 0},
+            {"auto_fixed_on_import", {
+                {"edges_fixed", fixed.edges_fixed}, {"degenerate_facets", fixed.degenerate_facets},
+                {"facets_removed", fixed.facets_removed}, {"facets_reversed", fixed.facets_reversed}}},
+            {"needs_repair", st.open_edges > 0},
+        });
+    }
+    return { {"objects", objects},
+             {"can_repair", plater()->can_fix_through_netfabb()},
+             {"note", "open_edges > 0 indica furos/bordas abertas; várias cascas separadas podem ser normais."} };
+}
+
+json JusPrinUltra::RepairModel(const json& p)
+{
+    const size_t idx = object_index(p);
+    ModelObject* obj = model().objects[idx];
+    const int before = obj->get_object_stl_stats().open_edges;
+
+    plater()->take_snapshot("JusBot: reparar modelo");
+    ProgressDialog progress_dlg(_L("Repairing model object"), "", 100, wxGetApp().mainframe,
+                                wxPD_AUTO_HIDE | wxPD_APP_MODAL | wxPD_CAN_ABORT);
+    std::string fix_result;
+    const bool ok = fix_model_by_win10_sdk_gui(*obj, -1, progress_dlg, _L("Repairing model object"), fix_result);
+    wxGetApp().obj_list()->update_item_error_icon(int(idx), -1);
+    refresh_after_model_change({ idx });
+    const int after = model().objects[idx]->get_object_stl_stats().open_edges;
+    if (!ok)
+        fail("O reparo do Windows falhou: " + fix_result);
+    return { {"index", idx}, {"open_edges_before", before}, {"open_edges_after", after}, {"details", fix_result} };
+}
+
+// ---------- Imagem da pré-visualização fatiada ----------
+
+namespace {
+std::string pixels_to_jpeg_base64(const std::vector<unsigned char>& px, int w, int h, int max_w)
+{
+    wxImage image(w, h);
+    for (int r = 0; r < h; ++r) {
+        const unsigned char* row = px.data() + size_t(h - 1 - r) * w * 4;   // OpenGL lê de baixo para cima
+        for (int c = 0; c < w; ++c)
+            image.SetRGB(c, r, row[c * 4], row[c * 4 + 1], row[c * 4 + 2]);
+    }
+    if (w > max_w)
+        image.Rescale(max_w, h * max_w / w, wxIMAGE_QUALITY_HIGH);
+    image.SetOption(wxIMAGE_OPTION_QUALITY, 85);
+    wxMemoryOutputStream stream;
+    image.SaveFile(stream, wxBITMAP_TYPE_JPEG);
+    wxStreamBuffer* buf = stream.GetOutputStreamBuffer();
+    const size_t size = buf->GetBufferSize();
+    std::string b64(boost::beast::detail::base64::encoded_size(size), '\0');
+    b64.resize(boost::beast::detail::base64::encode(b64.data(), buf->GetBufferStart(), size));
+    return "data:image/jpeg;base64," + b64;
+}
+} // namespace
+
+json JusPrinUltra::RenderPreview(const json& p)
+{
+    PartPlate* plate = plater()->get_partplate_list().get_curr_plate();
+    if (!plate || !plate->is_slice_result_valid())
+        fail("A mesa ainda não foi fatiada. Use slice antes.");
+
+    GLCanvas3D* canvas = plater()->get_preview_canvas3D();
+    if (!canvas || !canvas->get_wxglcanvas()->IsShownOnScreen()) {
+        // A pré-visualização só desenha quando está visível: abre a aba e pede para tentar de novo
+        plater()->select_view_3D("Preview", false);
+        wxGetApp().mainframe->select_tab(MainFrame::tpPreview);
+        fail("Abri a aba de pré-visualização agora; chame view_sliced_preview de novo.");
+    }
+
+    std::vector<std::string> views = p.value("views", std::vector<std::string>{"iso", "top", "front"});
+    json images = json::array();
+    for (const std::string& view : views) {
+        canvas->select_view(view);
+        canvas->zoom_to_gcode();
+        canvas->render();
+        const Size size = canvas->get_canvas_size();
+        const int w = size.get_width(), h = size.get_height();
+        if (w <= 0 || h <= 0)
+            fail("Não consegui ler a imagem da pré-visualização.");
+        std::vector<unsigned char> px(size_t(w) * h * 4);
+        glsafe(::glReadBuffer(GL_FRONT));
+        glsafe(::glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data()));
+        images.push_back({ {"view", view}, {"base64", pixels_to_jpeg_base64(px, w, h, 1280)} });
+    }
+    return images;
 }
 
 }} // namespace Slic3r::GUI

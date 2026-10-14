@@ -418,7 +418,11 @@ void JusPrinChatPanel::AdvertiseSupportedAction() {
 
 void JusPrinChatPanel::OnActionCallReceived(wxWebViewEvent& event)
 {
+    const bool first_call = !m_chat_page_loaded;
     m_chat_page_loaded = true;  // If we received an action call, the chat page is loaded and javascript is ready
+    // O anúncio feito em OnLoaded se perde (a página ainda não estava pronta); refaz na primeira chamada
+    if (first_call)
+        AdvertiseSupportedAction();
 
     wxString message = event.GetString();
 
