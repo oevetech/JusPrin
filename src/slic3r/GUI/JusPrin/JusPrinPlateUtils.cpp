@@ -310,6 +310,20 @@ nlohmann::json JusPrinPlateUtils::GetPlates(bool with_model_object_features) {
             nlohmann::json object_info;
             object_info["id"] = std::to_string(obj->id().id);
             object_info["name"] = obj->name;
+            // Modo Ultra: índice em model.objects e geometria, usados pelas ações jp_*
+            const auto& objs = plater->model().objects;
+            object_info["index"] = std::distance(objs.begin(), std::find(objs.begin(), objs.end(), obj));
+            object_info["copies"] = obj->instances.size();
+            if (!obj->instances.empty()) {
+                const BoundingBoxf3 obb = obj->instance_bounding_box(0);
+                const ModelInstance* inst = obj->instances[0];
+                object_info["size_mm"] = {obb.size().x(), obb.size().y(), obb.size().z()};
+                object_info["center"] = {obb.center().x(), obb.center().y(), obb.center().z()};
+                object_info["scale_percent"] = {inst->get_scaling_factor().x() * 100., inst->get_scaling_factor().y() * 100., inst->get_scaling_factor().z() * 100.};
+                object_info["rotation_deg"] = {inst->get_rotation().x() * 180. / PI, inst->get_rotation().y() * 180. / PI, inst->get_rotation().z() * 180. / PI};
+            }
+            object_info["parts"] = obj->volumes.size();
+            object_info["height_ranges"] = obj->layer_config_ranges.size();
             if (with_model_object_features) {
                 object_info["features"] = GetModelObjectFeaturesJson(obj);
             }

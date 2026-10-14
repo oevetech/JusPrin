@@ -586,6 +586,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/JusPrin/JusPrinView3D.hpp
     GUI/JusPrin/JusPrinPlateUtils.cpp
     GUI/JusPrin/JusPrinPlateUtils.hpp
+    GUI/JusPrin/JusPrinUltra.cpp
+    GUI/JusPrin/JusPrinUltra.hpp
     GUI/JusPrin/JusPrinNotificationManager.hpp
     GUI/JusPrin/JusPrinNotificationManager.cpp
     GUI/JusPrin/JusPrinPricingPlanDialog.hpp

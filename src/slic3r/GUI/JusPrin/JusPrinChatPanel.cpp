@@ -17,6 +17,7 @@
 #include "JusPrinPlateUtils.hpp"
 #include "JusPrinView3D.hpp"
 #include "JusPrinPricingPlanDialog.hpp"
+#include "JusPrinUltra.hpp"
 
 
 namespace Slic3r { namespace GUI {
@@ -408,6 +409,10 @@ void JusPrinChatPanel::AdvertiseSupportedAction() {
     for (const auto& [action, handler] : json_action_handlers) {
         action_handlers_json.push_back(action);
     }
+    // Ações do modo Ultra (JusBot + Claude)
+    for (const auto& [action, handler] : JusPrinUltra::handlers()) {
+        action_handlers_json.push_back(action);
+    }
     UpdateEmbeddedChatState("supportedActions", action_handlers_json.dump());
 }
 
@@ -427,7 +432,20 @@ void JusPrinChatPanel::OnActionCallReceived(wxWebViewEvent& event)
         !jsonObject["refId"].is_null() &&
         !jsonObject["refId"].get<std::string>().empty()) {
         GUI::wxGetApp().CallAfter([this, jsonObject] {
-            auto json_it = json_action_handlers.find(jsonObject["action"]);
+            const std::string action = jsonObject["action"];
+            const auto& ultra = JusPrinUltra::handlers();
+            if (auto ultra_it = ultra.find(action); ultra_it != ultra.end()) {
+                std::string refId = jsonObject["refId"];
+                nlohmann::json responseJson = {{"refId", refId}};
+                try {
+                    responseJson["retVal"] = ultra_it->second(jsonObject.value("payload", nlohmann::json::object()));
+                } catch (const std::exception& e) {
+                    responseJson["error"] = e.what();
+                }
+                CallEmbeddedChatMethod("setAgentActionRetVal", responseJson.dump());
+                return;
+            }
+            auto json_it = json_action_handlers.find(action);
             if (json_it != json_action_handlers.end()) {
                 try {
                     auto retVal = (this->*(json_it->second))(jsonObject);
