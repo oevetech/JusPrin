@@ -285,9 +285,9 @@ json JusPrinUltra::CutObject(const json& p)
 
     const std::string keep = p.value("keep", std::string("both"));
     ModelObjectCutAttributes attrs = ModelObjectCutAttribute::InvalidateCutInfo;
-    if (keep != "lower") attrs |= ModelObjectCutAttribute::KeepUpper;
-    if (keep != "upper") attrs |= ModelObjectCutAttribute::KeepLower;
-    if (p.value("flip_upper", false)) attrs |= ModelObjectCutAttribute::FlipUpper;
+    if (keep != "lower") attrs = attrs | ModelObjectCutAttribute::KeepUpper;
+    if (keep != "upper") attrs = attrs | ModelObjectCutAttribute::KeepLower;
+    if (p.value("flip_upper", false)) attrs = attrs | ModelObjectCutAttribute::FlipUpper;
 
     // Mesma lógica de Plater::cut_horizontal (privado)
     plater()->take_snapshot("JusBot: cortar objeto");
